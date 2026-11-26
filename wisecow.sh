@@ -1,46 +1,55 @@
 #!/usr/bin/env bash
 
 SRVPORT=4499
-RSPFILE=response
-
-rm -f $RSPFILE
-mkfifo $RSPFILE
-
-get_api() {
-	read line
-	echo $line
-}
 
 handleRequest() {
-    # 1) Process the request
-	get_api
-	mod=`fortune`
+    local request header path body status
 
-cat <<EOF > $RSPFILE
-HTTP/1.1 200
+    IFS= read -r request || return 0
+    request=${request%$'\r'}
 
+    # Read remaining HTTP headers
+    while IFS= read -r header; do
+        header=${header%$'\r'}
+        [[ -z "$header" ]] && break
+    done
 
-<pre>`cowsay $mod`</pre>
-EOF
+    echo "$request" >&2
+
+    path=$(echo "$request" | cut -d ' ' -f 2)
+
+    if [[ "$path" == "/healthz" ]]; then
+        body="OK"
+        status="200 OK"
+    else
+        body="<pre>$(fortune | cowsay)</pre>"
+        status="200 OK"
+    fi
+
+    # Return a properly formatted HTTP response
+    printf 'HTTP/1.1 %s\r\n' "$status"
+    printf 'Content-Type: text/html; charset=utf-8\r\n'
+    printf 'Content-Length: %s\r\n' "$(printf '%s' "$body" | wc -c)"
+    printf 'Connection: close\r\n'
+    printf '\r\n'
+    printf '%s' "$body"
 }
 
-prerequisites() {
-	command -v cowsay >/dev/null 2>&1 &&
-	command -v fortune >/dev/null 2>&1 || 
-		{ 
-			echo "Install prerequisites."
-			exit 1
-		}
-}
+if [[ "${1:-}" == "--handle-request" ]]; then
+    handleRequest
+    exit 0
+fi
 
-main() {
-	prerequisites
-	echo "Wisdom served on port=$SRVPORT..."
+# Verify dependencies
+for cmd in fortune cowsay socat; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo "Missing dependency: $cmd" >&2
+        exit 1
+    }
+done
 
-	while [ 1 ]; do
-		cat $RSPFILE | nc -lN $SRVPORT | handleRequest
-		sleep 0.01
-	done
-}
+echo "Wisdom served on port=$SRVPORT..."
 
-main
+exec socat \
+    TCP-LISTEN:${SRVPORT},reuseaddr,fork,max-children=32 \
+    EXEC:"bash /app/wisecow.sh --handle-request"

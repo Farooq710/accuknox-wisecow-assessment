@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+response
+*.log
+*.tmp
+k8s/
+scripts/
+screenshots/
