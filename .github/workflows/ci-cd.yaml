@@ -1,0 +1,109 @@
+
+name: Wisecow CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: farooq710/accuknox-wisecow-assessment
+
+jobs:
+  build-test-publish:
+    name: Build, Test and Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Validate Bash syntax
+        run: bash -n wisecow.sh
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t wisecow:test \
+            .
+
+      - name: Start test container
+        run: |
+          docker run -d \
+            --name wisecow-test \
+            -p 127.0.0.1:4499:4499 \
+            wisecow:test
+
+      - name: Verify application readiness
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 \
+              http://127.0.0.1:4499/ \
+              -o /tmp/wisecow-response.html; then
+              echo "Application is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Application failed readiness check"
+          exit 1
+
+      - name: Test application responses
+        run: |
+          for i in $(seq 1 10); do
+            echo "Testing request $i"
+
+            curl -fsS --max-time 10 \
+              http://127.0.0.1:4499/ \
+              -o /tmp/wisecow-response.html
+
+            grep -q '<pre>' /tmp/wisecow-response.html
+          done
+
+          echo "All application tests passed"
+
+      - name: Verify non-root execution
+        run: |
+          USER_ID=$(docker exec wisecow-test id -u)
+          test "$USER_ID" -ne 0
+          echo "Container running as UID: $USER_ID"
+
+      - name: Display container logs
+        if: always()
+        run: docker logs wisecow-test || true
+
+      - name: Clean up test container
+        if: always()
+        run: docker rm -f wisecow-test || true
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and publish Docker image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+
+          docker tag wisecow:test "${IMAGE}:latest"
+          docker tag wisecow:test "${IMAGE}:${GITHUB_SHA}"
+
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
+
+          echo "Docker images published successfully"
