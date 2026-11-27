@@ -16,3 +16,6 @@ response
 __pycache__/
 .venv/
 logs/
+
+# Windows download metadata
+*:Zone.Identifier
