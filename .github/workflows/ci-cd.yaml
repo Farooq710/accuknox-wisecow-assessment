@@ -12,7 +12,10 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: wisecow-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -24,18 +27,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Validate Bash syntax
         run: bash -n wisecow.sh
 
       - name: Build Docker image
-        run: |
-          docker build \
-            -t wisecow:test \
-            .
+        run: docker build -t wisecow:test .
 
       - name: Start test container
         run: |
@@ -48,8 +54,7 @@ jobs:
         run: |
           for i in $(seq 1 30); do
             if curl -fsS --max-time 5 \
-              http://127.0.0.1:4499/ \
-              -o /tmp/wisecow-response.html; then
+              http://127.0.0.1:4499/healthz; then
               echo "Application is ready"
               exit 0
             fi
@@ -62,8 +67,6 @@ jobs:
       - name: Test application responses
         run: |
           for i in $(seq 1 10); do
-            echo "Testing request $i"
-
             curl -fsS --max-time 10 \
               http://127.0.0.1:4499/ \
               -o /tmp/wisecow-response.html
@@ -72,6 +75,15 @@ jobs:
           done
 
           echo "All application tests passed"
+
+      - name: Test concurrent requests
+        run: |
+          seq 1 50 | xargs -P 10 -I {} \
+            curl -fsS --max-time 10 \
+            -o /dev/null \
+            http://127.0.0.1:4499/
+
+          echo "All 50 concurrent-request tests passed"
 
       - name: Verify non-root execution
         run: |
@@ -107,3 +119,88 @@ jobs:
           docker push "${IMAGE}:latest"
 
           echo "Docker images published successfully"
+
+  deploy:
+    name: Deploy to Kubernetes
+    needs: build-test-publish
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == 'Farooq710'
+
+    runs-on: [self-hosted, Linux, X64, wisecow-cd]
+
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Kubernetes connectivity
+        run: |
+          minikube status
+          kubectl --context=minikube get nodes
+          kubectl --context=minikube get secret ghcr-secret
+
+      - name: Deploy new application image
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+
+          kubectl --context=minikube set image \
+            -f k8s/deployment.yaml \
+            wisecow="${IMAGE}" \
+            --local -o yaml > /tmp/wisecow-deployment.yaml
+
+          kubectl --context=minikube apply \
+            -f /tmp/wisecow-deployment.yaml
+
+          kubectl --context=minikube apply \
+            -f k8s/service.yaml
+
+      - name: Monitor rolling update
+        run: |
+          kubectl --context=minikube rollout status \
+            deployment/wisecow-deployment \
+            --timeout=180s
+
+      - name: Verify deployed resources
+        run: |
+          kubectl --context=minikube get deployments
+          kubectl --context=minikube get pods -l app=wisecow -o wide
+          kubectl --context=minikube get svc wisecow-service
+
+          kubectl --context=minikube get pods -l app=wisecow \
+            -o custom-columns='NAME:.metadata.name,IMAGE:.spec.containers[0].image,STATUS:.status.phase'
+
+      - name: Verify deployed image version
+        run: |
+          EXPECTED="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+
+          ACTUAL=$(kubectl --context=minikube get \
+            deployment wisecow-deployment \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+          test "$ACTUAL" = "$EXPECTED"
+
+          echo "Successfully deployed ${ACTUAL}"
+
+      - name: Test deployed application health
+        run: |
+          kubectl --context=minikube port-forward \
+            svc/wisecow-service 18080:80 \
+            > /tmp/wisecow-port-forward.log 2>&1 &
+
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+
+          curl -fsS --retry 5 --retry-connrefused \
+            --retry-delay 2 --max-time 10 \
+            http://127.0.0.1:18080/healthz
+
+          curl -fsS --max-time 10 \
+            http://127.0.0.1:18080/ | grep '<pre>'
+
+          echo "Deployment health verification passed"

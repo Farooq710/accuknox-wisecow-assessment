@@ -1,3 +1,4 @@
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +27,9 @@ spec:
     spec:
       automountServiceAccountToken: false
 
+      imagePullSecrets:
+        - name: ghcr-secret
+
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -35,7 +39,7 @@ spec:
 
       containers:
         - name: wisecow
-          image: wisecow:v1.0.1
+          image: ghcr.io/farooq710/accuknox-wisecow-assessment:fc35dc7a3009801575bc93d5d4a3e768d90f895d
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -74,3 +78,4 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
+
