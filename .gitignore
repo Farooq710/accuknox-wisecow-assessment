@@ -1,0 +1,17 @@
+# TLS certificates and private keys
+certs/
+*.key
+*.pem
+*.crt
+
+# Sensitive configuration
+.env
+.env.*
+!.env.example
+
+# Runtime files
+response
+*.log
+*.tmp
+__pycache__/
+.venv/

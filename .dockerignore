@@ -1,3 +1,10 @@
+# TLS certificates and credentials
+certs/
+*.key
+*.pem
+*.crt
+.env
+.env.*
 .git
 .github
 .gitignore
